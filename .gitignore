@@ -1,7 +1,3 @@
-# Data (do not commit)
-data/raw/
-data/processed/
-
 # VS Code
 .vscode/
 
@@ -18,5 +14,3 @@ env/
 # OS
 .DS_Store
 Thumbs.db
-
-.vscode/
