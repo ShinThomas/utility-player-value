@@ -1,0 +1,322 @@
+---
+title: "utility"
+format: html
+editor: visual
+---
+
+```{r}
+# Install baseballr through  pacman - this may take ~30 mins
+if (!requireNamespace('pacman', quietly = TRUE)){
+  install.packages('pacman')
+}
+pacman::p_load_current_gh("billpetti/baseballr")
+library(dplyr)
+library(stringi)
+library(tidyverse)
+```
+
+```         
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+rs_data <- retrosheet_data(
+  path_to_directory = NULL,
+  years_to_acquire = c(seq(2016,2025)),
+  sequence_years = FALSE
+)
+```
+
+```{r}
+rs_dataframe <- names(rs_data) %>% lapply(function(year) {
+  # print(year)
+  thing <- rs_data[[year]]$events %>% 
+    select(year, bat_id, pit_id, bat_hand_cd, pit_hand_cd, 
+           game_id, away_team_id, bat_home_id, event_cd, ab_fl, sf_fl, sh_fl) %>% 
+    mutate(home_team_id=substr(game_id, 1, 3)) 
+  return(thing)
+}) %>% bind_rows()
+```
+
+\
+\
+
+```{r}
+rs_dataframe %>% 
+  group_by(year, pit_hand_cd) %>% 
+    summarise(num=n()) %>% 
+    mutate(percent=num / sum(num)) %>% 
+  
+
+```
+
+### So about 27-28% of plate appearances come against lefties
+
+```{r}
+RIGHT_PLATOON_THRESHOLD <- 0.5
+LEFT_PLATOON_THRESHOLD <- 0.15
+platoon_players <-rs_dataframe %>% 
+  mutate(batter_team=ifelse(bat_home_id==1, home_team_id, away_team_id)) %>%
+  group_by(year, bat_id, pit_hand_cd) %>% 
+    summarise(num=n(), team=first(batter_team)) %>% 
+    mutate(percent=num / sum(num)) %>% 
+    mutate(plays_against=ifelse(percent >= RIGHT_PLATOON_THRESHOLD, 
+                                "L", "R")) %>% 
+   filter(sum(num) > 150) %>% 
+  ungroup() %>% 
+  filter(pit_hand_cd == 'L' & (percent >= RIGHT_PLATOON_THRESHOLD | percent <= LEFT_PLATOON_THRESHOLD))
+
+print(platoon_players)
+print(platoon_players %>% select(plays_against) %>% table())
+```
+
+```{r}
+platoon_players %>% group_by(plays_against) %>% 
+  summarize(total = n())
+print(platoon_players)
+total_players <- rs_dataframe %>% 
+  group_by(year, bat_id, bat_hand_cd) %>% 
+  summarize(total = n())
+print(total_players)
+```
+
+```{r}
+one_platoon_teams <- platoon_players %>% 
+  group_by(year, team) %>% 
+  filter(n() == 2) %>%
+  filter(first(plays_against) != last(plays_against)) %>% 
+  arrange(year, team)
+```
+
+```{r}
+against_righty_average <- one_platoon_teams %>% 
+  filter(plays_against=='R')
+print(mean(against_righty_average$percent))
+
+against_lefty_average <- one_platoon_teams %>% 
+  filter(plays_against=='L')
+print(1 - mean(against_lefty_average$percent))
+
+
+
+```
+
+#### In a platoon, righty-specialist hitters take about 12% of at-bats against lefties in a platoon, and lefty-specialist hitters take about 44% of at-bats against righties. So in a proper platoon you get 88% of at-bats against lefties correct and 56% of at-bats against righties correct
+
+If 27% of PAs are against lefties, that 0.88\*0.27 + 0.56 \* 0.73
+
+```{r}
+print(0.88*0.27 + 0.56*0.73)
+```
+
+So adding a platoon gives you an improvement in 64% of PAs? No, 64% is the total number correct
+
+For righty-specialist hitters, the bad outcome is facing lefties, which happens 27% of the time - this is reduced to 12%. Therefore 88% of their at-bats are good
+
+For lefty-specialist hitters, the bad outcome is facing righties, which happens 73% of the time - this is reduced to 44%
+
+So under a 2-man platoon, and assuming that these two take all at-bats.
+
+The lefty takes 56% of at-bats against the righties, and the righty takes 44%. The righty takes 88% of at-bats against the lefties and the lefty takes 12%. Before, with a lefty you get 73% of at-bats right but with a righty you only get 27% of at-bats right.
+
+```{r}
+guts <- read.csv("fangraphs-guts-data.csv")
+
+event_counter <- function(grouped_df) {
+  grouped_df <- grouped_df %>% 
+     summarize(singles=sum(event_cd==20), 
+         unint_walks=sum(event_cd == 14),
+         int_walks=sum(event_cd == 15),
+         hbps = sum(event_cd == 16),
+         doubles=sum(event_cd==21),
+         triples=sum(event_cd==22),
+         home_runs=sum(event_cd==23),
+         at_bats=sum(ab_fl==TRUE),
+         sac_flies=sum(sf_fl==TRUE),
+         sac_hits=sum(sh_fl==TRUE),
+         .groups="keep"
+         ) %>% 
+    mutate(plate_appearences=at_bats+unint_walks+int_walks+hbps+sac_flies+sac_hits)
+  return(grouped_df)
+}
+
+
+event_counter2 <- function(grouped_df) {
+  grouped_df <- grouped_df %>% 
+     mutate(singles=event_cd==20, 
+         unint_walks=event_cd == 14,
+         int_walks=event_cd == 15,
+         hbps = event_cd == 16,
+         doubles=event_cd==21,
+         triples=event_cd==22,
+         home_runs=event_cd==23,
+         at_bats=ab_fl==TRUE,
+         sac_flies=sf_fl==TRUE,
+         sac_hits=sh_fl==TRUE,
+         ) %>% 
+    mutate(plate_appearences=at_bats+unint_walks+int_walks+hbps+sac_flies+sac_hits)
+  return(grouped_df)
+}
+
+calculate_woba <- function(grouped_df) {
+  grouped_df <- grouped_df %>% 
+  left_join(guts, by=join_by(year==Season)) %>% 
+  mutate(woba_num=wBB*unint_walks +
+           wHBP * hbps +
+           w1B * singles +
+           w2B * doubles +
+           w3B * triples +
+           wHR * home_runs) %>% 
+  mutate(woba_denom=at_bats + unint_walks + sac_flies + hbps) %>% 
+  mutate(woba=woba_num/woba_denom)
+  return(grouped_df)
+  }
+
+rs_dataframe_counts <- rs_dataframe %>% 
+  group_by(year, bat_id, pit_hand_cd) %>%
+  event_counter() %>% 
+  calculate_woba()
+ 
+
+rs_dataframe_platoons <- rs_dataframe %>% 
+  group_by(pit_hand_cd, bat_hand_cd, year) %>% 
+  event_counter() %>% 
+  calculate_woba()
+
+pitcher_batters_faced <- rs_dataframe %>% 
+  group_by(pit_id, year) %>% 
+  filter(ab_fl==TRUE | sh_fl == TRUE | sf_fl == TRUE |
+           event_cd==14 | # unint walk
+           event_cd==15 | # int walk
+           event_cd==16 #HBP
+         ) %>% 
+  summarize(batters_faced=n())
+
+batter_pas <- rs_dataframe %>% 
+   group_by(bat_id, year) %>% 
+  filter(ab_fl==TRUE | sh_fl == TRUE | sf_fl == TRUE |
+           event_cd==14 | # unint walk
+           event_cd==15 | # int walk
+           event_cd==16 #HBP
+         ) %>% 
+  summarize(plate_appearences=n())
+
+pitcher_wobas <- rs_dataframe %>% 
+  group_by(pit_id, year) %>% 
+  event_counter() %>% 
+  calculate_woba() %>% 
+  rename(pitcher_woba=woba) %>% 
+  select(pit_id, year, pitcher_woba)
+
+batter_wobas <- rs_dataframe %>% 
+  group_by(bat_id, year) %>% 
+  event_counter() %>% 
+  calculate_woba() %>% 
+  rename(batter_woba=woba) %>% 
+  select(bat_id, year, batter_woba)
+
+league_wobas <- guts %>% 
+  select(Season, wOBA) %>% 
+  rename(av_woba=wOBA)
+
+fringe_players <- rs_dataframe %>% 
+  left_join(pitcher_batters_faced, 
+            by=join_by(year==year, pit_id==pit_id)) %>% 
+  filter(batters_faced >= 250) %>% 
+  left_join(batter_pas, 
+            by=join_by(year==year, bat_id==bat_id)) %>% 
+  filter(plate_appearences >= 100 & plate_appearences <= 400) %>% 
+  mutate(same_hand=bat_hand_cd==pit_hand_cd) %>%
+  left_join(pitcher_wobas, by=join_by(year==year, pit_id==pit_id)) %>% 
+  left_join(batter_wobas, by=join_by(year==year, bat_id==bat_id)) %>% 
+  
+  # group_by(year, bat_id, same_hand) %>% 
+  event_counter2() %>% 
+  filter(plate_appearences == 1) %>% 
+  calculate_woba() %>% 
+  left_join(league_wobas, by=join_by(year==Season)) %>% 
+  select(same_hand, pitcher_woba, batter_woba, av_woba, woba) %>% 
+  filter(!is.na(woba)) %>% 
+  mutate(expected_woba=pitcher_woba + batter_woba - av_woba)
+  # group_by(year, bat_id) %>%  
+
+  
+regular_players <- rs_dataframe %>% 
+  left_join(pitcher_batters_faced, 
+            by=join_by(year==year, pit_id==pit_id)) %>% 
+  filter(batters_faced >= 250) %>% 
+  left_join(batter_pas, 
+            by=join_by(year==year, bat_id==bat_id)) %>% 
+  filter(plate_appearences > 400) %>% 
+  mutate(same_hand=bat_hand_cd==pit_hand_cd) %>%
+  left_join(pitcher_wobas, by=join_by(year==year, pit_id==pit_id)) %>% 
+  left_join(batter_wobas, by=join_by(year==year, bat_id==bat_id)) %>% 
+  event_counter2() %>% 
+  filter(plate_appearences == 1) %>% 
+  calculate_woba() %>% 
+  left_join(league_wobas, by=join_by(year==Season)) %>% 
+  select(same_hand, pitcher_woba, batter_woba, av_woba, woba) %>% 
+  filter(!is.na(woba)) %>% 
+  mutate(expected_woba=pitcher_woba + batter_woba - av_woba)
+```
+
+```{r}
+fringe_fit <- lm(woba ~ expected_woba + same_hand, data = fringe_players)
+print(summary(fringe_fit))
+regular_fit <- lm(woba ~ expected_woba + same_hand, data = regular_players)
+print(summary(regular_fit))
+```
+
+```{r}
+guts <- guts %>%
+  mutate(runs_600= (-coef(fit)["same_handTRUE"] / wOBAScale) * 600)
+```
+
+## Rule 5
+
+```{r}
+# https://www.baseball-reference.com/data/war_daily_bat.txt
+rule_5 <- read.csv("rule5.csv") %>% 
+  mutate(Player=gsub(" Jr.", "", Player))
+
+batting_war <- read.csv('batting_war.csv') %>% 
+  # mutate(WAR=replace(WAR, is.na(WAR), 0)) %>%
+  group_by(mlb_ID) %>% 
+  summarize(name=first(name_common), war=sum(as.numeric(WAR)), debut=min(year_ID), batter_years_played=n_distinct(year_ID)) %>% 
+  mutate(name=stri_trans_general(name, "Latin-ASCII"))
+
+pitching_war <- read.csv("pitching_war.csv") %>% 
+  group_by(mlb_ID) %>% 
+  summarize(name=first(name_common), war=sum(as.numeric(WAR)), debut=min(year_ID), pitcher_years_played=n_distinct(year_ID)) %>% 
+  mutate(name=stri_trans_general(name, "Latin-ASCII"))
+
+```
+
+```{r}
+
+rule_5 <- rule_5 %>% 
+  filter(Year >= 2010) %>% 
+  mutate(five_later = Year + 5) %>% 
+  left_join(batting_war, by=join_by(Player == name, Year <= debut, five_later >= debut)) %>% 
+  left_join(pitching_war, by=join_by(Player == name, Year <= debut, five_later >= debut)) %>% 
+  mutate(WAR = case_when(
+    is.na(war.x) ~ war.y,
+    is.na(war.y) ~ war.x,
+    TRUE ~ war.x + war.y
+  ))  %>% 
+  mutate(years_played=case_when(
+    is.na(pitcher_years_played) ~ batter_years_played,
+    is.na(batter_years_played) ~ pitcher_years_played,
+    TRUE ~ pmax(batter_years_played, pitcher_years_played)
+  )) %>% 
+  select(Year, Player, Returned, Traded, WAR, years_played) %>% 
+  mutate(WAR=coalesce(WAR, 0), years_played=coalesce(years_played, 0)) %>% 
+  mutate(WAR_per_year = ifelse(years_played == 0, 0, WAR/years_played))
+```
+
+```{r}
+sum(rule_5$WAR) / sum(rule_5$years_played)
+
+
+```
