@@ -15,11 +15,6 @@ library(stringi)
 library(tidyverse)
 ```
 
-```         
-```
-
-The `echo: false` option disables the printing of code (only output is displayed).
-
 ```{r}
 rs_data <- retrosheet_data(
   path_to_directory = NULL,
@@ -39,28 +34,34 @@ rs_dataframe <- names(rs_data) %>% lapply(function(year) {
 }) %>% bind_rows()
 ```
 
-\
-\
+Russ Carleton in 2013 wrote a Baseball Prospectus article called "The Zobrist Effect" trying to answer this question. He identified three sources of value that a utility player creates, and then made some rough estimates as to how much WAR each one produces. I attempted to replicate this using data from 2016-2025, and got similar results.
+
+The first step was to define what even makes a platoon player: what percentage of your plate appearances have to come against one hand for you to be a platoon? First up to consider that is how many plate appearances on average come against lefties?
 
 ```{r}
 rs_dataframe %>% 
   group_by(year, pit_hand_cd) %>% 
     summarise(num=n()) %>% 
-    mutate(percent=num / sum(num)) %>% 
+    mutate(percent=num / sum(num))
   
 
 ```
 
-### So about 27-28% of plate appearances come against lefties
+The answer changes year to year, but the average looks to be about 27%.
+
+I first made guesstimates of 15% as the maximim percent of PAs against lefties for a righty-facing platoon bat, and 50% as the minimum threshold for PAs against lefties for a lefty-facing platoon bat.
+
+I reviewed a few of the players at the fringe of these numbers and was reasonably satisfied that I would consider them "platoon bats." But ultimately I found a [2016 Fangraphs article from Scott Spratt](https://fantasy.fangraphs.com/realized-platoon-rates/) having calculated these thresholds a little more carefully, and his results were 11% and 55%, slightly stricter than I had originally expected.
 
 ```{r}
-RIGHT_PLATOON_THRESHOLD <- 0.5
-LEFT_PLATOON_THRESHOLD <- 0.15
+RIGHT_PLATOON_THRESHOLD <- 0.55
+LEFT_PLATOON_THRESHOLD <- 0.11
 platoon_players <-rs_dataframe %>% 
   mutate(batter_team=ifelse(bat_home_id==1, home_team_id, away_team_id)) %>%
   group_by(year, bat_id, pit_hand_cd) %>% 
     summarise(num=n(), team=first(batter_team)) %>% 
-    mutate(percent=num / sum(num)) %>% 
+    mutate(total_abs=sum(num)) %>% 
+    mutate(percent=num / total_abs) %>% 
     mutate(plays_against=ifelse(percent >= RIGHT_PLATOON_THRESHOLD, 
                                 "L", "R")) %>% 
    filter(sum(num) > 150) %>% 
@@ -71,15 +72,15 @@ print(platoon_players)
 print(platoon_players %>% select(plays_against) %>% table())
 ```
 
+I used this threshold to find all true platoon seasons with at least 150 PAs between 2016 and 2025, the result being 41 lefty-facing platoon bats and 118 righty-facing platoon bats.
+
 ```{r}
-platoon_players %>% group_by(plays_against) %>% 
-  summarize(total = n())
-print(platoon_players)
-total_players <- rs_dataframe %>% 
-  group_by(year, bat_id, bat_hand_cd) %>% 
-  summarize(total = n())
-print(total_players)
+
 ```
+
+Carleton writes that of the 700 PAs taken over the course of a season without a platoon, about half come against the correct handedness. I wanted to calculate the percentage that could be changed, with a platoon, to the correct hand.
+
+To do this, I filtered my platoon dataset to just teams that had exactly two platoon bats in a year, one of each hand. This way I could be reasonably confident that they were spelling each other in the lineup. The average total PAs of these duos is 515, so they weren't taking all 700 position ABs (probably due to injuries, rest, and using other players given that platoon bats tend to be not as good overall as guys who can hit both sides).
 
 ```{r}
 one_platoon_teams <- platoon_players %>% 
@@ -88,6 +89,8 @@ one_platoon_teams <- platoon_players %>%
   filter(first(plays_against) != last(plays_against)) %>% 
   arrange(year, team)
 ```
+
+Back to basics and Russ Carleton. Carleton says that each positon takes around 700 PAs, and on average half on the correct side. I say that under a platoon, you can get to about 70% of PAs taken by the right side. So this is instead of 350 bad PAs, 210 bad PAs. That saves 140 PAs, which can be taken with the proper side
 
 ```{r}
 against_righty_average <- one_platoon_teams %>% 
@@ -99,26 +102,23 @@ against_lefty_average <- one_platoon_teams %>%
 print(1 - mean(against_lefty_average$percent))
 
 
+# lefties go from 73% to 91% right
+# righties go from 27% to 63% right
 
 ```
 
-#### In a platoon, righty-specialist hitters take about 12% of at-bats against lefties in a platoon, and lefty-specialist hitters take about 44% of at-bats against righties. So in a proper platoon you get 88% of at-bats against lefties correct and 56% of at-bats against righties correct
-
-If 27% of PAs are against lefties, that 0.88\*0.27 + 0.56 \* 0.73
+My results: In a platoon, righty-specialist hitters take about 9.4% of at-bats against lefties, and lefty-specialist hitters take about 37% of at-bats against righties. So in a proper platoon you get 91% of at-bats against lefties correct and 63% of at-bats against righties correct. With the average of 27% of PAs being against lefties and 73% against righties, this average out to about 70%.
 
 ```{r}
-print(0.88*0.27 + 0.56*0.73)
+PAs_correct_with_platoon <- 0.906*0.27 + 0.63*0.73
+print(PAs_correct_with_platoon)
 ```
 
-So adding a platoon gives you an improvement in 64% of PAs? No, 64% is the total number correct
+With 700 PAs, 70% correct is 490 instead of 350 (at 50% correct). That's 140 PAs that enjoy the handedness advantage. Obviously this simplifies out the factor that one side of the platoon could be better than the other, but supposing they are equally good hitters, we can find the total run value created by the platoon by multiplying that by runs created per plate appearance.
 
-For righty-specialist hitters, the bad outcome is facing lefties, which happens 27% of the time - this is reduced to 12%. Therefore 88% of their at-bats are good
+Carleton finds the platoon advantage to be 22 points worth of OBP for fringe players (100 to 400 PAs) and 19 points of OBP for full-tme player
 
-For lefty-specialist hitters, the bad outcome is facing righties, which happens 73% of the time - this is reduced to 44%
-
-So under a 2-man platoon, and assuming that these two take all at-bats.
-
-The lefty takes 56% of at-bats against the righties, and the righty takes 44%. The righty takes 88% of at-bats against the lefties and the lefty takes 12%. Before, with a lefty you get 73% of at-bats right but with a righty you only get 27% of at-bats right.
+> To look at this, I used the odds-ratio method to isolate all cases where a batter who had \> between 100 PA and 400 PA in the season in question (2003-2012) was at bat and opposing a pitcher who faced at least 250 batters. I looked at the expected OBP of the matchup, coded \> whether the batter and pitcher were of the same hand or different handedness, and ran a \> logistic regression using both inputs. The effect for fringe regulars and part-timers of the \> platoon effect was about 22 points' worth of OBP. For regulars (400 or more PA), it was 19.
 
 ```{r}
 guts <- read.csv("fangraphs-guts-data.csv")
@@ -268,10 +268,26 @@ regular_fit <- lm(woba ~ expected_woba + same_hand, data = regular_players)
 print(summary(regular_fit))
 ```
 
+\
+I did my best to recreate his protocol in that paragraph using wOBA instead of OBP, and my updated data. The main difference is that instead of expected OBP of a matchup (which he calculated using the "odds-ratio method," I calculated expected wOBA in a rather primitive but hopefully functional way - batter wOBA + pitcher wOBA - leaguewOBA. I then ran linear regressions predicting the wOBA outcome of a plate appearance given the expected wOBA and whether the hitter and pitcher had the same hand. My results came out similar to Carleton's: an increase of about 0.02 wOBA for having the platoon advantage for fringe/part-time players, and a 0.017 increase for full-time players.
+
 ```{r}
-guts <- guts %>%
-  mutate(runs_600= (-coef(fit)["same_handTRUE"] / wOBAScale) * 600)
+fringe_advantage_woba <- 0.020620
+wobas_10 <- guts %>% filter(Season >= 2016) %>% select(wOBAScale)
+woba_scale <- mean(wobas_10$wOBAScale)
+regular_advantage_woba <- 0.016817
+pas_saved <- 140
+fringe_runs_gained <- (fringe_advantage_woba / woba_scale) * pas_saved
+fringe_war_gained <- fringe_runs_gained / 10
+regular_runs_gained <- (regular_advantage_woba / woba_scale) * pas_saved
+regular_war_gained <- regular_runs_gained / 10
+print(fringe_war_gained)
+print(regular_war_gained)
 ```
+
+Since wOBA translates very well into runs gained, I treat the platoon advantage as the "difference over league average," divide by the average wOBA scale over my dataset, and multiply by the 140 PAs in which the advantage is observed. For enabling the platoons of part-time players, this translates to 2.4 runs gained, around 0.24 WAR, and for full-time players it's around 1.9 runs or 0.19 WAR.
+
+This is all pretty crude but a little less crude than Carleton's estimates: I think it's fair to say that the value of enabling a platoon is about 0.2 WAR. Is that enough to be worth changing your team-building philosophy for? No, Tom Tango would probably call it a rounding error. But it is a non-zero value that a Ben Zobrist type player makes it very easy to get your hands on.
 
 ## Rule 5
 
@@ -319,4 +335,18 @@ rule_5 <- rule_5 %>%
 sum(rule_5$WAR) / sum(rule_5$years_played)
 
 
+```
+
+\-\--
+
+## Junkyard
+
+```{r}
+platoon_players %>% group_by(plays_against) %>% 
+  summarize(total = n())
+print(platoon_players)
+total_players <- rs_dataframe %>% 
+  group_by(year, bat_id, bat_hand_cd) %>% 
+  summarize(total = n())
+print(total_players)
 ```
